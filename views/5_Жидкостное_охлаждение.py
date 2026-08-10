@@ -18,7 +18,6 @@ from calc import mixing
 from calc import heat_balance
 from calc import air_leakage
 
-st.set_page_config(page_title="Жидкостное охлаждение", layout="wide")
 render_sidebar()
 
 st.header("Жидкостное охлаждение антифризом")

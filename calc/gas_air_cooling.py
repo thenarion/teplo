@@ -58,8 +58,8 @@ def gas_air_cooling_calculate(
     T_gas_in_C: float,
     T_gas_out_C: float,
     T_air_in_C: float,
-    T_air_max_out_C: float = 80.0,
-    dT_air: float = 20.0,
+    T_air_max_out_C: float = 300.0,
+    dT_air: float = 150.0,
     v_air: float = 3.0,
     U: float = 50.0,
     F: float = 0.9,
@@ -77,11 +77,29 @@ def gas_air_cooling_calculate(
 
     # Температура воздуха на выходе
     T_air_out_C = T_air_in_C + dT_air
-    if T_air_out_C > T_gas_in_C:
+
+    # Проверка: воздух не горячее газа на входе
+    if T_air_out_C >= T_gas_in_C - 20:
         warnings.append(
-            f"Температура воздуха на выходе ({T_air_out_C:.0f}°C) выше "
-            f"температуры газа на входе ({T_gas_in_C:.0f}°C). "
-            "Уменьшите нагрев воздуха или увеличьте расход."
+            f"Температура воздуха на выходе ({T_air_out_C:.0f}°C) "
+            f"слишком близка к температуре газа на входе ({T_gas_in_C:.0f}°C). "
+            "LMTD будет очень малым."
+        )
+
+    # Проверка: воздух на выходе горячее газа на выходе (для противотока желательно)
+    if T_air_out_C < T_gas_out_C:
+        warnings.append(
+            f"Температура воздуха на выходе ({T_air_out_C:.0f}°C) "
+            f"ниже температуры газа на выходе ({T_gas_out_C:.0f}°C). "
+            "Проверьте схему теплообменника."
+        )
+
+    # Ограничение по максимальной температуре воздуха
+    if T_air_out_C > T_air_max_out_C:
+        T_air_out_C = T_air_max_out_C
+        dT_air = T_air_out_C - T_air_in_C
+        warnings.append(
+            f"Температура воздуха на выходе ограничена {T_air_max_out_C:.0f}°C."
         )
 
     # Массовый расход воздуха
@@ -91,8 +109,18 @@ def gas_air_cooling_calculate(
     T_air_avg = (T_air_in_C + T_air_out_C) / 2
     V_air_m3h = cooling_air_volume_flow(m_air, T_air_avg, p_Pa)
 
-    # LMTD
-    lmtd_val = hx_sizing.lmtd(T_gas_in_C, T_gas_out_C, T_air_in_C, T_air_out_C)
+    # LMTD для противотока
+    dT_hot = T_gas_in_C - T_air_out_C
+    dT_cold = T_gas_out_C - T_air_in_C
+
+    if dT_hot <= 0 or dT_cold <= 0:
+        warnings.append(
+            f"Невозможный режим: ΔT_hot={dT_hot:.0f}°C, ΔT_cold={dT_cold:.0f}°C. "
+            "Уменьшите нагрев воздуха."
+        )
+        lmtd_val = 0.0
+    else:
+        lmtd_val = hx_sizing.lmtd(T_gas_in_C, T_gas_out_C, T_air_in_C, T_air_out_C)
 
     # Площадь теплообмена
     Q_W = Q_kW * 1000

@@ -75,6 +75,24 @@ def dry_cooler_sizing(Q_kW: float,
     if T_air_out_C is None:
         T_air_out_C = T_air_in_C + dT_air
 
+    # Проверка: воздух на выходе не должен быть горячее антифриза на входе
+    if T_air_out_C >= T_liquid_in_C - 5:
+        warnings.append(
+            f"T_air_out ({T_air_out_C:.0f}°C) слишком близка к "
+            f"T_liquid_in ({T_liquid_in_C:.0f}°C). LMTD будет малым. "
+            f"Уменьшите T_air_out или увеличьте T_liquid_in."
+        )
+
+    # Проверка: ΔT на горячем конце
+    dT_hot = T_liquid_in_C - T_air_out_C
+    dT_cold = T_liquid_out_C - T_air_in_C
+
+    if dT_hot <= 5:
+        warnings.append(
+            f"ΔT на горячем конце = {dT_hot:.0f}°C — слишком мало. "
+            f"Увеличьте температуру антифриза."
+        )
+
     # Расход воздуха через dry cooler
     cp_air = gp.cp_air((T_air_in_C + T_air_out_C) / 2)
     m_air = liquid_flow_rate(Q_kW, cp_air, T_air_out_C - T_air_in_C)
@@ -130,8 +148,8 @@ def liquid_cooling_calculate(
     Q_kW: float,
     T_gas_in_C: float,
     T_gas_out_C: float,
-    T_liquid_in_C: float = 60.0,
-    dT_liquid_K: float = 10.0,
+    T_liquid_in_C: float = 80.0,
+    dT_liquid_K: float = 20.0,
     glycol_type: str = "propylene",
     concentration_pct: float = 30.0,
     T_min_ambient: float = -30.0,
@@ -142,7 +160,7 @@ def liquid_cooling_calculate(
     margin_pct: float = 25.0,
     dp_system_bar: float = 1.5,
     pump_eta: float = 0.6,
-    dT_air_cooler: float = 15.0,
+    dT_air_cooler: float = 30.0,
 ) -> dict:
     """
     Полный расчёт жидкостного контура охлаждения.
@@ -192,6 +210,13 @@ def liquid_cooling_calculate(
         margin_pct=15.0,
     )
     warnings.extend(dc["warnings"])
+
+    if dc["LMTD"] < 20:
+        warnings.append(
+            f"LMTD dry cooler = {dc['LMTD']:.0f}K. "
+            f"Рекомендуется увеличить температуру антифриза до 90-110°C "
+            f"или уменьшить нагрев воздуха."
+        )
 
     # Проверки
     if T_liquid_out_C > 120:

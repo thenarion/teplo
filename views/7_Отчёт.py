@@ -16,7 +16,6 @@ from calc import heat_balance
 from calc import air_leakage
 from calc import hx_sizing
 
-st.set_page_config(page_title="Отчёт", layout="wide")
 render_sidebar()
 
 st.header("Отчёт и экспорт")

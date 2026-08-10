@@ -9,8 +9,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from ui.inputs import render_sidebar, get_params, render_leak_inputs, get_leak_params, load_defaults
 from calc import gas_properties as gp
 
-st.set_page_config(page_title="Исходные данные", layout="wide")
-
 render_sidebar()
 
 st.header("Исходные данные")

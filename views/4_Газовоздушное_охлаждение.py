@@ -19,7 +19,6 @@ from calc import air_leakage
 from calc import hx_sizing
 from calc import sizing
 
-st.set_page_config(page_title="Газовоздушное охлаждение", layout="wide")
 render_sidebar()
 
 st.header("Газовоздушное охлаждение")
@@ -59,8 +58,8 @@ st.subheader("Параметры расчёта")
 col1, col2, col3 = st.columns(3)
 with col1:
     dT_air = st.number_input("Нагрев воздуха, K",
-                              value=int(defaults.get("dT_air_cooling", 40)),
-                              min_value=10, max_value=100, key="ga_dT_air")
+                              value=int(defaults.get("dT_air_cooling", 150)),
+                              min_value=10, max_value=500, key="ga_dT_air")
 with col2:
     v_air = st.number_input("Скорость воздуха, м/с",
                              value=float(defaults.get("v_air", 3.0)),

@@ -14,7 +14,6 @@ from calc import air_leakage
 from calc import hx_sizing
 from calc import sizing
 
-st.set_page_config(page_title="Габариты", layout="wide")
 render_sidebar()
 
 st.header("Оценка габаритов теплообменника")

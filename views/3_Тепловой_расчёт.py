@@ -21,7 +21,6 @@ from calc import heat_balance
 from calc import hx_sizing
 from calc import air_leakage
 
-st.set_page_config(page_title="Тепловой расчёт", layout="wide")
 render_sidebar()
 
 st.header("Тепловой расчёт")

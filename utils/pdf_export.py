@@ -6,6 +6,82 @@
 from fpdf import FPDF
 from datetime import datetime
 import os
+import io
+
+
+def _make_charts(res) -> dict:
+    """
+    Генерирует plotly-графики и возвращает PNG-байты.
+    Возвращает dict с ключами: mass, heat, stages (bytes или None).
+    """
+    try:
+        import plotly.graph_objects as go
+        import plotly.express as px
+        import pandas as pd
+    except ImportError:
+        return {"mass": None, "heat": None, "stages": None}
+
+    charts = {"mass": None, "heat": None, "stages": None}
+    inp = res.input
+    b = res.burnout
+
+    # 1. Круговая диаграмма состава топлива
+    try:
+        mass_df = pd.DataFrame({
+            "Компонент": ["Вода", "Зола", "Горючая масса"],
+            "Масса, кг/ч": [res.water_mass, res.ash_mass, res.combustible_mass],
+        })
+        fig = px.pie(mass_df, values="Масса, кг/ч", names="Компонент",
+                     title="Состав топлива", hole=0.3,
+                     color="Компонент",
+                     color_discrete_map={"Вода": "#3498db", "Зола": "#95a5a6", "Горючая масса": "#e74c3c"})
+        fig.update_layout(width=600, height=400, font=dict(size=12),
+                         template="plotly_white")
+        charts["mass"] = fig.to_image(format="png", engine="kaleido")
+    except Exception:
+        pass
+
+    # 2. Столбчатая диаграмма теплового баланса
+    try:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=["Приход"], y=[res.q_fuel_actual],
+                             name="Тепло от топлива", marker_color="green"))
+        fig.add_trace(go.Bar(x=["Приход"], y=[inp.burner_power],
+                             name="Тепло от горелки", marker_color="lightgreen"))
+        fig.add_trace(go.Bar(x=["Расход"], y=[res.q_flue_gas],
+                             name="Уходящие газы", marker_color="red"))
+        fig.add_trace(go.Bar(x=["Расход"], y=[res.q_wall],
+                             name="Потери через футеровку", marker_color="orange"))
+        fig.add_trace(go.Bar(x=["Расход"], y=[res.q_ash],
+                             name="Потери с золой", marker_color="yellow"))
+        fig.add_trace(go.Bar(x=["Расход"], y=[res.q_useful_with_burner],
+                             name="Полезное тепло", marker_color="blue"))
+        fig.update_layout(title="Тепловой баланс, МВт", barmode="stack",
+                          yaxis_title="МВт", width=700, height=400, font=dict(size=12))
+        charts["heat"] = fig.to_image(format="png", engine="kaleido")
+    except Exception:
+        pass
+
+    # 3. Диаграмма стадий выгорания
+    if b:
+        try:
+            stages_df = pd.DataFrame({
+                "Стадия": ["Сушка", "Нагрев", "Горение", "Дожигание"],
+                "Время, мин": [b.t_drying, b.t_heating, b.t_combustion, b.t_burnout],
+            })
+            fig = px.bar(stages_df, x="Стадия", y="Время, мин",
+                         title="Время по стадиям выгорания", color="Стадия",
+                         color_discrete_sequence=["#FF6B6B", "#FFA500", "#4ECDC4", "#45B7D1"])
+            fig.add_hline(y=b.residence_time, line_dash="dash", line_color="red",
+                          annotation_text=f"Факт. время: {b.residence_time:.0f} мин")
+            fig.add_hline(y=b.t_required, line_dash="dot", line_color="orange",
+                          annotation_text=f"Необходимое: {b.t_required:.0f} мин")
+            fig.update_layout(width=700, height=400, font=dict(size=12))
+            charts["stages"] = fig.to_image(format="png", engine="kaleido")
+        except Exception:
+            pass
+
+    return charts
 
 
 def get_font_path() -> str:
@@ -93,6 +169,11 @@ class ThermalBalancePDF(FPDF):
         self.multi_cell(0, 5, text)
         self.ln(2)
 
+    def add_image_bytes(self, img_bytes: bytes, w: int = 170):
+        """Добавляет PNG-изображение из байтов."""
+        self.image(io.BytesIO(img_bytes), w=w)
+        self.ln(5)
+
 
 def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str = "thermal_balance.pdf") -> bytes:
     """
@@ -105,6 +186,9 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
 
     inp = res.input
     b = res.burnout
+
+    # Генерируем графики
+    charts = _make_charts(res)
 
     # =========================================================
     # ИСХОДНЫЕ ДАННЫЕ
@@ -122,7 +206,7 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
         ["Мощность горелки (макс)", f"{inp.burner_power:.1f} МВт"],
         ["Длина барабана", f"{inp.drum_length:.1f} м"],
         ["Диаметр барабана", f"{inp.drum_diameter:.1f} м"],
-        ["Время пребывания отхода", f"{inp.residence_time:.0f} мин"],
+        ["Время пребывания отхода", f"{b.residence_time:.0f} мин"],
         ["Насыпная плотность отхода", f"{inp.bulk_density:.0f} кг/м³"],
     ]
 
@@ -151,6 +235,9 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
         col_widths=[70, 50, 40]
     )
 
+    if charts["mass"]:
+        pdf.add_image_bytes(charts["mass"], w=120)
+
     # =========================================================
     # ТЕПЛОТА СГОРАНИЯ
     # =========================================================
@@ -158,7 +245,7 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
 
     heat_data = [
         ["Низшая теплота сгорания (Q_net)", f"{res.q_net_ar:.2f} МДж/кг"],
-        ["Тепловыделение от топлива", f"{res.q_fuel:.3f} МВт"],
+        ["Тепловыделение от топлива", f"{res.q_fuel_actual:.3f} МВт"],
     ]
 
     pdf.add_table(
@@ -199,6 +286,9 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
         col_widths=[90, 40, 40]
     )
 
+    if charts["heat"]:
+        pdf.add_image_bytes(charts["heat"], w=150)
+
     # =========================================================
     # ПОЛНОТА ВЫГОРАНИЯ
     # =========================================================
@@ -213,7 +303,7 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
         ["Время горения", f"{b.t_combustion:.1f} мин"],
         ["Время дожигания", f"{b.t_burnout:.1f} мин"],
         ["Необходимое время выгорания", f"{b.t_required:.1f} мин"],
-        ["Фактическое время пребывания", f"{inp.residence_time:.1f} мин"],
+        ["Фактическое время пребывания", f"{b.residence_time:.1f} мин"],
         ["Коэффициент запаса времени", f"{b.time_ratio:.2f}"],
         ["Полнота выгорания", f"{b.burnout_efficiency*100:.1f}%"],
         ["Удельная тепловая нагрузка", f"{b.heat_load:.0f} кВт/м³"],
@@ -225,6 +315,9 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
         col_widths=[100, 80]
     )
 
+    if charts["stages"]:
+        pdf.add_image_bytes(charts["stages"], w=150)
+
     # =========================================================
     # ВЫВОДЫ
     # =========================================================
@@ -232,7 +325,7 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
 
     conclusions = f"""
 Процесс {'полностью автотермичный' if res.q_useful_no_burner > 0 else 'НЕ автотермичный'}.
-Тепловыделение от топлива: {res.q_fuel:.3f} МВт.
+Тепловыделение от топлива: {res.q_fuel_actual:.3f} МВт.
 Полезное тепло без горелки: {res.q_useful_no_burner:.3f} МВт.
 Полезное тепло с горелкой: {res.q_useful_with_burner:.3f} МВт.
 КПД установки (без горелки): {res.efficiency_no_burner*100:.1f}%.
@@ -250,10 +343,10 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
     return bytes(raw) if isinstance(raw, bytearray) else raw
 
 
+
 def export_to_pdf_simple(res, summary_table: list, flue_gas_params: list) -> bytes:
     """
-    Упрощённый экспорт в PDF (fallback если fpdf2 не установлен).
-    Возвращает текстовый отчёт.
+    Упрощённый экспорт в текстовый отчёт.
     """
     lines = []
     lines.append("=" * 60)
@@ -263,48 +356,50 @@ def export_to_pdf_simple(res, summary_table: list, flue_gas_params: list) -> byt
     lines.append("")
 
     inp = res.input
+    b = res.burnout
+
     lines.append("1. ИСХОДНЫЕ ДАННЫЕ")
     lines.append(f"  Подача топлива: {inp.fuel_feed:.0f} кг/ч")
     lines.append(f"  Влажность: {inp.moisture*100:.0f}%")
-    lines.append(f"  Q_gross: {inp.q_net_ar:.1f} МДж/кг")
+    lines.append(f"  Q_net: {inp.q_net_ar:.2f} МДж/кг")
     lines.append(f"  Зольность: {inp.ash_content*100:.0f}%")
     lines.append(f"  Избыток воздуха (α): {inp.excess_air:.2f}")
-    lines.append(f"  T газов на выходе: {inp.flue_gas_temp:.0f}°C")
     lines.append(f"  T наружного воздуха: {inp.ambient_temp:.0f}°C")
+    lines.append(f"  Длина барабана: {inp.drum_length:.1f} м")
+    lines.append(f"  Диаметр барабана: {inp.drum_diameter:.1f} м")
+    lines.append(f"  Угол наклона: {inp.drum_angle:.1f}°")
+    lines.append(f"  Скорость вращения: {inp.drum_rpm:.1f} об/мин")
+    lines.append(f"  Коэффициент материала: {inp.material_coeff:.2f}")
     lines.append("")
 
-    lines.append("2. МАССОВЫЙ БАЛАНС")
-    lines.append(f"  Вода: {res.water_mass:.0f} кг/ч")
-    lines.append(f"  Сухое вещество: {res.dry_mass:.0f} кг/ч")
-    lines.append(f"  Зола: {res.ash_mass:.0f} кг/ч")
-    lines.append(f"  Горючая масса: {res.combustible_mass:.0f} кг/ч")
+    lines.append("2. ВРЕМЯ ПРЕБЫВАНИЯ И ПОЛНОТА ВЫГОРАНИЯ")
+    lines.append(f"  Скорость движения материала: {b.material_velocity:.3f} м/мин")
+    lines.append(f"  Время пребывания: {b.residence_time:.1f} мин")
+    lines.append(f"  Степень заполнения: {b.fill_ratio*100:.1f}%")
+    lines.append(f"  Необходимое время выгорания: {b.t_required:.1f} мин")
+    lines.append(f"  Коэффициент запаса времени: {b.time_ratio:.2f}")
+    lines.append(f"  Коэффициент диаметра: {b.k_diameter:.3f}")
+    lines.append(f"  Полнота выгорания: {b.burnout_efficiency*100:.1f}%")
+    lines.append(f"  Удельная тепловая нагрузка: {b.heat_load:.0f} кВт/м³")
     lines.append("")
 
-    lines.append("3. ТЕПЛОТА СГОРАНИЯ")
-    lines.append(f"  Q_net: {res.q_net_ar:.2f} МДж/кг")
+    lines.append("3. ТЕПЛОВОЙ БАЛАНС")
+    lines.append(f"  Тепловыделение номинальное: {res.q_fuel_nominal:.3f} МВт")
+    lines.append(f"  Тепловыделение фактическое: {res.q_fuel_actual:.3f} МВт")
+    lines.append(f"  Температура на выходе (расчётная): {inp.flue_gas_temp:.0f}°C")
     lines.append("")
 
-    lines.append("4. ТЕПЛОВОЙ ПРИХОД")
-    lines.append(f"  Тепло от топлива: {res.q_fuel:.2f} МВт")
-    lines.append(f"  Тепло от горелки: {inp.burner_power:.2f} МВт")
-    lines.append(f"  Итого: {res.q_input_with_burner:.2f} МВт")
-    lines.append("")
-
-    lines.append("5. РАСХОД ВОЗДУХА")
-    lines.append(f"  Объём воздуха: {res.v_air_actual:.0f} Нм³/ч")
-    lines.append(f"  Масса воздуха: {res.m_air:.0f} кг/ч")
-    lines.append(f"  Объём газов: {res.v_flue:.0f} Нм³/ч")
-    lines.append("")
-
-    lines.append("6. ТЕПЛОВОЙ БАЛАНС")
     for row in summary_table:
-        lines.append(f"  {row['Статья']:40s} {row['МВт']:>10s} {row['%']:>10s}")
+        lines.append(f"  {row['Статья']:40s} {row['МВт']:>12s} {row['%']:>10s}")
     lines.append("")
 
-    lines.append("7. ВЫВОДЫ")
-    lines.append(f"  Полезное тепло (без горелки): {res.q_useful_no_burner:.2f} МВт")
-    lines.append(f"  Полезное тепло (с горелкой): {res.q_useful_with_burner:.2f} МВт")
-    lines.append(f"  КПД (без горелки): {res.efficiency_no_burner*100:.1f}%")
-    lines.append(f"  КПД (с горелкой): {res.efficiency_with_burner*100:.1f}%")
+    lines.append("4. ВЫВОДЫ")
+    lines.append(f"  Автотермичность: {'Да' if res.q_useful_no_burner > 0 else 'Нет'}")
+    lines.append(f"  Отход успевает выгореть: {'Да' if b.overall_ok else 'Нет'}")
+    lines.append(f"  Тепловая нагрузка в норме: {'Да' if b.heat_load_ok else 'Нет'}")
 
     return "\n".join(lines).encode("utf-8")
+
+
+# Упрощённый экспорт в PDF (fallback если fpdf2 не установлен).
+# Возвращает текстовый отчёт.

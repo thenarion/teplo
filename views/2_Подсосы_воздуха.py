@@ -10,7 +10,6 @@ from ui.inputs import render_sidebar, get_params, get_leak_params, render_leak_i
 from calc import air_leakage
 from calc import gas_properties as gp
 
-st.set_page_config(page_title="Подсосы воздуха", layout="wide")
 render_sidebar()
 
 st.header("Подсосы воздуха в циклонах")
