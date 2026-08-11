@@ -43,6 +43,18 @@ def menu_page():
                 st.session_state["section"] = "tb"
                 st.rerun()
 
+    with st.container(border=True):
+        st.subheader("Теплообменный аппарат барабанной печи")
+        st.markdown("""
+        - Расчёт газовоздушного теплообмена
+        - Учёт подсоса воздуха на циклонах
+        - Предварительная оценка геометрии и массы
+        - Вариант 2 в разработке
+        """)
+        if st.button("Перейти →", use_container_width=True, key="btn_va"):
+            st.session_state["section"] = "va"
+            st.rerun()
+
 
 # --- Страницы теплообменника ---
 hx_pages = [
@@ -60,6 +72,11 @@ tb_pages = [
     st.Page("views/8_Тепловой_баланс.py", title="Тепловой баланс", icon="📊"),
 ]
 
+# --- Страницы теплообменного аппарата ---
+va_pages = [
+    st.Page("views/variant12_gas_air_view.py", title="Теплообменный аппарат", icon="🔥"),
+]
+
 # --- Кнопка «Назад» добавляется во все страницы через sidebar ---
 # (уже есть в render_sidebar() и в thermal_balance)
 
@@ -73,6 +90,9 @@ if section == "hx":
 elif section == "tb":
     menu_btn = st.Page(menu_page, title="← Меню", icon="🏠", url_path="menu")
     pages = [menu_btn] + tb_pages
+elif section == "va":
+    menu_btn = st.Page(menu_page, title="← Меню", icon="🏠", url_path="menu")
+    pages = [menu_btn] + va_pages
 else:
     pages = [st.Page(menu_page, title="Меню", url_path="menu")]
 
