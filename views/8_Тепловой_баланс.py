@@ -20,6 +20,7 @@ from calc.thermal_balance_calc import (
     get_burnout_params,
 )
 from utils.pdf_export import export_to_pdf, export_to_pdf_simple
+from utils.docx_export import export_to_docx
 
 
 st.title("🔥 Тепловой баланс сжигания топлива")
@@ -48,6 +49,18 @@ with st.sidebar:
         "Низшая теплота сгорания, МДж/кг",
         min_value=1.0, max_value=50.0,
         value=12.42, step=0.5, format="%.2f",
+    )
+
+    q_basis = st.selectbox(
+        "База теплоты сгорания",
+        ["as_received", "dry", "daf"],
+        format_func=lambda x: {
+            "as_received": "Рабочая масса (с водой и золой)",
+            "dry": "Сухая масса (без воды)",
+            "daf": "Горючая масса (без воды и золы)",
+        }[x],
+        index=0,
+        help="Выберите, на какую массу задана теплота сгорания"
     )
 
     ash_content = st.slider(
@@ -169,6 +182,18 @@ with st.sidebar:
         value=200.0, step=10.0, format="%.0f",
     )
 
+    st.subheader("Корректировка")
+    
+    burnout_speed_factor = st.slider(
+        "Коэффициент скорости выгорания",
+        min_value=0.5,
+        max_value=2.0,
+        value=1.2,
+        step=0.1,
+        format="%.1f",
+        help="1.0 — базовая скорость. >1.0 — выгорание быстрее. 1.2 — на 20% быстрее (эмпирические данные)."
+    )
+
 # =========================================================
 # РАСЧЁТ
 # =========================================================
@@ -176,6 +201,7 @@ inp = ThermalBalanceInput(
     fuel_feed=fuel_feed,
     moisture=moisture,
     q_net_ar=q_net_ar,
+    q_basis=q_basis,
     ash_content=ash_content,
     bulk_density=bulk_density,
     excess_air=excess_air,
@@ -192,6 +218,7 @@ inp = ThermalBalanceInput(
     material_type=selected_material_key,
     material_coeff=material_coeff,
     max_heat_load=max_heat_load,
+    burnout_speed_factor=burnout_speed_factor,
 )
 
 res = calculate_thermal_balance(inp)
@@ -211,7 +238,21 @@ with col1:
     st.metric("Время пребывания", f"{res.burnout.residence_time:.0f} мин")
 
 with col2:
-    st.metric("Полнота выгорания", f"{res.burnout.burnout_efficiency*100:.1f}%")
+    b = res.burnout
+    status_colors = {
+        "excellent": "🟢",
+        "good": "🟢",
+        "acceptable": "🟡",
+        "poor": "🟠",
+        "unacceptable": "🔴",
+    }
+    color = status_colors.get(b.burnout_status, "⚪")
+    st.metric(
+        f"{color} Полнота выгорания",
+        f"{b.burnout_efficiency*100:.1f}%",
+        delta=b.burnout_status_ru,
+        delta_color="normal" if b.burnout_status in ["excellent", "good"] else "inverse",
+    )
 
 with col3:
     st.metric("T на выходе", f"{inp.flue_gas_temp:.0f}°C")
@@ -250,6 +291,51 @@ if warnings:
         st.warning(w)
 else:
     st.success("✅ Все параметры в допустимых пределах")
+
+# =========================================================
+# ОЦЕНКА ПОЛНОТЫ ВЫГОРАНИЯ
+# =========================================================
+st.divider()
+st.subheader("Оценка полноты выгорания")
+
+b = res.burnout
+
+if b.burnout_status == "excellent":
+    st.success(f"""
+    🟢 **Полнота выгорания: {b.burnout_efficiency*100:.1f}% — Отлично**
+    
+    В золе практически не остаётся горючих. Соответствует самым жёстким нормативным требованиям.
+    """)
+elif b.burnout_status == "good":
+    st.success(f"""
+    🟢 **Полнота выгорания: {b.burnout_efficiency*100:.1f}% — Хорошо**
+    
+    Недожог менее 5%. Удовлетворяет нормативным требованиям для промышленных установок.
+    """)
+elif b.burnout_status == "acceptable":
+    st.warning(f"""
+    🟡 **Полнота выгорания: {b.burnout_efficiency*100:.1f}% — Удовлетворительно**
+    
+    Минимально допустимый уровень (90–95%). 
+    Рекомендуется увеличить время пребывания или температуру.
+    """)
+elif b.burnout_status == "poor":
+    st.error(f"""
+    🟠 **Полнота выгорания: {b.burnout_efficiency*100:.1f}% — Плохо**
+    
+    В золе остаётся много горючих — потери топлива, проблемы с золоудалением.
+    Требуется пересмотр параметров работы печи.
+    """)
+else:  # unacceptable
+    st.error(f"""
+    🔴 **Полнота выгорания: {b.burnout_efficiency*100:.1f}% — Недопустимо**
+    
+    Требуется срочное вмешательство:
+    - Увеличить время пребывания (длина барабана, снизить подачу)
+    - Повысить температуру в зоне горения
+    - Улучшить перемешивание (скорость вращения, лопасти)
+    - Предварительно подсушить отход
+    """)
 
 # =========================================================
 # ТАБЛИЦЫ
@@ -465,12 +551,43 @@ with col3:
     """)
 
 # =========================================================
+# ОБЩИЙ ВЫВОД
+# =========================================================
+st.divider()
+st.header("📋 Общий вывод")
+
+b = res.burnout
+
+if b.overall_ok:
+    st.success("""
+    ✅ **Все параметры в допустимых пределах.**
+    
+    Отход успевает полностью выгореть. Установка работает в штатном режиме.
+    """)
+else:
+    reasons = []
+    if not b.time_ok:
+        reasons.append("недостаточное время пребывания")
+    if not b.fill_ratio_ok:
+        reasons.append("превышена степень заполнения")
+    if not b.heat_load_ok:
+        reasons.append("превышена тепловая нагрузка")
+    if b.burnout_efficiency < 0.90:
+        reasons.append(f"полнота выгорания ниже 90% (фактически {b.burnout_efficiency*100:.1f}%)")
+    
+    st.error(f"""
+    ❌ **Отход НЕ успевает полностью выгореть.**
+    
+    Причины:
+    """ + "\n".join([f"- {r}" for r in reasons]))
+
+# =========================================================
 # ЭКСПОРТ
 # =========================================================
 st.divider()
 st.header("📄 Экспорт отчёта")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     try:
@@ -486,6 +603,19 @@ with col1:
         st.warning(f"PDF экспорт недоступен: {e}")
 
 with col2:
+    try:
+        docx_bytes = export_to_docx(res, summary_table, flue_gas_params)
+        st.download_button(
+            label="📥 Скачать DOCX",
+            data=docx_bytes,
+            file_name="thermal_balance.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.warning(f"DOCX экспорт недоступен: {e}")
+
+with col3:
     txt_bytes = export_to_pdf_simple(res, summary_table, flue_gas_params)
     st.download_button(
         label="📥 Скачать TXT",

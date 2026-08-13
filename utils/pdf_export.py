@@ -199,6 +199,11 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
         ["Подача влажного топлива", f"{inp.fuel_feed:.0f} кг/ч"],
         ["Влажность", f"{inp.moisture*100:.0f}%"],
         ["Низшая теплота сгорания (Q_net)", f"{inp.q_net_ar:.2f} МДж/кг"],
+        ["База теплоты сгорания", {
+            "as_received": "Рабочая масса (с водой и золой)",
+            "dry": "Сухая масса (без воды)",
+            "daf": "Горючая масса (без воды и золы)",
+        }.get(inp.q_basis, inp.q_basis)],
         ["Зольность на рабочую массу", f"{inp.ash_content*100:.0f}%"],
         ["Коэффициент избытка воздуха (α)", f"{inp.excess_air:.2f}"],
         ["Температура дымовых газов на выходе", f"{inp.flue_gas_temp:.0f}°C"],
@@ -324,20 +329,41 @@ def export_to_pdf(res, summary_table: list, flue_gas_params: list, filename: str
     pdf.section_title("7. Выводы")
 
     conclusions = f"""
-Процесс {'полностью автотермичный' if res.q_useful_no_burner > 0 else 'НЕ автотермичный'}.
-Тепловыделение от топлива: {res.q_fuel_actual:.3f} МВт.
-Полезное тепло без горелки: {res.q_useful_no_burner:.3f} МВт.
-Полезное тепло с горелкой: {res.q_useful_with_burner:.3f} МВт.
-КПД установки (без горелки): {res.efficiency_no_burner*100:.1f}%.
-КПД установки (с горелкой): {res.efficiency_with_burner*100:.1f}%.
+Автотермичность: {'Да' if res.q_useful_no_burner > 0 else 'Нет'}
+Тепловыделение от топлива: {res.q_fuel_actual:.3f} МВт
+Полезное тепло без горелки: {res.q_useful_no_burner:.3f} МВт
+КПД установки: {res.efficiency_with_burner*100:.1f}%
 
-Полнота выгорания: {b.burnout_efficiency*100:.1f}%.
-Удельная тепловая нагрузка: {b.heat_load:.0f} кВт/м³ (лимит {inp.max_heat_load:.0f} кВт/м³).
-Степень заполнения барабана: {b.fill_ratio*100:.1f}%.
+Время пребывания: {b.residence_time:.1f} мин (необходимо {b.t_required:.1f} мин)
+Запас времени: ×{b.time_ratio:.2f}
+Время пребывания достаточное: {'Да' if b.time_ok else 'Нет'}
 
-Вывод: {'Отход успевает выгореть' if b.overall_ok else 'Отход НЕ успевает полностью выгореть'}.
+Степень заполнения: {b.fill_ratio*100:.1f}% (допустимая {inp.max_fill_ratio*100:.0f}%)
+Степень заполнения в норме: {'Да' if b.fill_ratio_ok else 'Нет'}
+
+Тепловая нагрузка: {b.heat_load:.0f} кВт/м³ (допустимая {inp.max_heat_load:.0f} кВт/м³)
+Тепловая нагрузка в норме: {'Да' if b.heat_load_ok else 'Нет'}
+
+Полнота выгорания: {b.burnout_efficiency*100:.1f}%
+Оценка: {b.burnout_status_ru}
 """
     pdf.add_text(conclusions.strip())
+    
+    # Общий вывод
+    if b.overall_ok:
+        pdf.add_text("ОБЩИЙ ВЫВОД: Отход успевает полностью выгореть. Установка работает в штатном режиме.")
+    else:
+        reasons = []
+        if not b.time_ok:
+            reasons.append("недостаточное время пребывания")
+        if not b.fill_ratio_ok:
+            reasons.append("превышена степень заполнения")
+        if not b.heat_load_ok:
+            reasons.append("превышена тепловая нагрузка")
+        if b.burnout_efficiency < 0.90:
+            reasons.append(f"полнота выгорания ниже 90% (фактически {b.burnout_efficiency*100:.1f}%)")
+        pdf.add_text("ОБЩИЙ ВЫВОД: Отход НЕ успевает полностью выгореть.")
+        pdf.add_text(f"Причины: {', '.join(reasons)}.")
 
     raw = pdf.output(dest="S")
     return bytes(raw) if isinstance(raw, bytearray) else raw
@@ -365,6 +391,14 @@ def export_to_pdf_simple(res, summary_table: list, flue_gas_params: list) -> byt
     lines.append(f"  Зольность: {inp.ash_content*100:.0f}%")
     lines.append(f"  Избыток воздуха (α): {inp.excess_air:.2f}")
     lines.append(f"  T наружного воздуха: {inp.ambient_temp:.0f}°C")
+    
+    q_basis_names = {
+        "as_received": "Рабочая масса (с водой и золой)",
+        "dry": "Сухая масса (без воды)",
+        "daf": "Горючая масса (без воды и золы)",
+    }
+    lines.append(f"  База теплоты сгорания: {q_basis_names.get(inp.q_basis, inp.q_basis)}")
+    
     lines.append(f"  Длина барабана: {inp.drum_length:.1f} м")
     lines.append(f"  Диаметр барабана: {inp.drum_diameter:.1f} м")
     lines.append(f"  Угол наклона: {inp.drum_angle:.1f}°")
@@ -395,8 +429,48 @@ def export_to_pdf_simple(res, summary_table: list, flue_gas_params: list) -> byt
 
     lines.append("4. ВЫВОДЫ")
     lines.append(f"  Автотермичность: {'Да' if res.q_useful_no_burner > 0 else 'Нет'}")
-    lines.append(f"  Отход успевает выгореть: {'Да' if b.overall_ok else 'Нет'}")
-    lines.append(f"  Тепловая нагрузка в норме: {'Да' if b.heat_load_ok else 'Нет'}")
+    lines.append("")
+    
+    lines.append("  4.1. Время пребывания:")
+    lines.append(f"    Фактическое: {b.residence_time:.1f} мин")
+    lines.append(f"    Необходимое: {b.t_required:.1f} мин")
+    lines.append(f"    Запас: ×{b.time_ratio:.2f}")
+    lines.append(f"    Достаточное: {'Да' if b.time_ok else 'Нет'}")
+    lines.append("")
+    
+    lines.append("  4.2. Степень заполнения:")
+    lines.append(f"    Фактическая: {b.fill_ratio*100:.1f}%")
+    lines.append(f"    Допустимая: {inp.max_fill_ratio*100:.0f}%")
+    lines.append(f"    В норме: {'Да' if b.fill_ratio_ok else 'Нет'}")
+    lines.append("")
+    
+    lines.append("  4.3. Тепловая нагрузка:")
+    lines.append(f"    Фактическая: {b.heat_load:.0f} кВт/м³")
+    lines.append(f"    Допустимая: {inp.max_heat_load:.0f} кВт/м³")
+    lines.append(f"    В норме: {'Да' if b.heat_load_ok else 'Нет'}")
+    lines.append("")
+    
+    lines.append("  4.4. Полнота выгорания:")
+    lines.append(f"    Значение: {b.burnout_efficiency*100:.1f}%")
+    lines.append(f"    Оценка: {b.burnout_status_ru}")
+    lines.append("")
+    
+    lines.append("  4.5. Общий вывод:")
+    if b.overall_ok:
+        lines.append("    Отход успевает полностью выгореть.")
+        lines.append("    Установка работает в штатном режиме.")
+    else:
+        reasons = []
+        if not b.time_ok:
+            reasons.append("недостаточное время пребывания")
+        if not b.fill_ratio_ok:
+            reasons.append("превышена степень заполнения")
+        if not b.heat_load_ok:
+            reasons.append("превышена тепловая нагрузка")
+        if b.burnout_efficiency < 0.90:
+            reasons.append(f"полнота выгорания ниже 90%")
+        lines.append("    Отход НЕ успевает полностью выгореть.")
+        lines.append(f"    Причины: {', '.join(reasons)}")
 
     return "\n".join(lines).encode("utf-8")
 

@@ -62,6 +62,7 @@ class ThermalBalanceInput:
     fuel_feed: float = 3660.0          # Подача влажного топлива, кг/ч
     moisture: float = 0.50             # Влажность, доля (0-1)
     q_net_ar: float = 12.42            # Низшая теплота сгорания рабочей массы, МДж/кг
+    q_basis: str = "as_received"       # База: "as_received", "dry", "daf"
     ash_content: float = 0.20          # Зольность на рабочую массу, доля (0-1)
     bulk_density: float = 400.0        # Насыпная плотность отхода, кг/м³
     
@@ -92,6 +93,12 @@ class ThermalBalanceInput:
     max_heat_load: float = 200.0       # Максимальная тепловая нагрузка, кВт/м³
     max_fill_ratio: float = 0.20       # Максимальная степень заполнения, доля
 
+    # Коэффициент скорости выгорания
+    # 1.0 — базовая скорость
+    # 1.2 — выгорание в 1,2 раза быстрее (эмпирические данные)
+    # >1.0 — быстрее, <1.0 — медленнее
+    burnout_speed_factor: float = 1.2
+
 
 @dataclass
 class BurnoutResult:
@@ -119,6 +126,8 @@ class BurnoutResult:
     time_ratio: float = 0.0
     k_diameter: float = 0.0
     burnout_efficiency: float = 0.0
+    burnout_status: str = "unknown"       # excellent/good/acceptable/poor/unacceptable
+    burnout_status_ru: str = ""           # Русское описание статуса
     
     # Тепловая нагрузка
     heat_load: float = 0.0
@@ -144,6 +153,7 @@ class ThermalBalanceResult:
 
     # Теплота сгорания
     q_net_ar: float = 0.0
+    q_basis: str = "as_received"    # База теплоты сгорания
 
     # Тепловой приход
     q_fuel_nominal: float = 0.0        # Номинальное тепловыделение (если бы всё сгорело)
@@ -226,52 +236,91 @@ def calculate_burnout_efficiency(
     t_residence: float,
     t_required: float,
     drum_diameter: float,
-) -> Tuple[float, float]:
+    target_efficiency: float = 0.95,
+) -> Tuple[float, float, float]:
     """
     Рассчитывает полноту выгорания с учётом времени пребывания и диаметра.
+    
+    Parameters
+    ----------
+    t_residence : float
+        Фактическое время пребывания, мин.
+    t_required : float
+        Базовое необходимое время выгорания, мин (без учёта диаметра).
+    drum_diameter : float
+        Диаметр барабана, м.
+    target_efficiency : float
+        Целевая полнота выгорания при k_time = 1.0 (по умолчанию 0.95).
     
     Returns
     -------
     tuple
-        (полнота выгорания, коэффициент диаметра)
+        (полнота выгорания, коэффициент диаметра, скорректированное время)
     """
     if t_required <= 0:
-        return 0.99, 1.0
-
-    # Коэффициент запаса времени
-    k_time = t_residence / t_required
-
-    # Базовая полнота выгорания по времени
-    if k_time >= 1.5:
-        eta_base = 0.99
-    elif k_time >= 1.2:
-        eta_base = 0.95 + 0.04 * (k_time - 1.2) / 0.3
-    elif k_time >= 1.0:
-        eta_base = 0.90 + 0.05 * (k_time - 1.0) / 0.2
-    elif k_time >= 0.7:
-        eta_base = 0.75 + 0.15 * (k_time - 0.7) / 0.3
-    else:
-        eta_base = 0.50 + 0.25 * k_time / 0.7
+        return target_efficiency, 1.0, t_required
 
     # Коэффициент диаметра (линейная зависимость)
-    # D = 1.0 м → k = 0.85
-    # D = 3.0 м → k = 1.00
+    # D = 1.0 м → k = 0.85 (хуже перемешивание, больше время)
+    # D = 3.0 м → k = 1.00 (лучше перемешивание, меньше время)
     k_diameter = 0.85 + 0.15 * (drum_diameter - 1.0) / 2.0
     k_diameter = max(0.80, min(1.10, k_diameter))
 
-    # Итоговая полнота выгорания
-    eta_burnout = eta_base * k_diameter
-    eta_burnout = max(0.0, min(0.99, eta_burnout))
+    # Скорректированное время с учётом диаметра
+    # Больший диаметр → меньше время
+    t_required_adjusted = t_required / k_diameter
 
-    return eta_burnout, k_diameter
+    # Коэффициент запаса времени
+    k_time = t_residence / t_required_adjusted if t_required_adjusted > 0 else 1.0
 
+    # Базовая полнота выгорания
+    # При k_time = 1.0 → target_efficiency (95%)
+    # При k_time = 1.5 → 99%
+    # При k_time = 0.7 → 85%
+    
+    if k_time >= 1.5:
+        eta_base = 0.99
+    elif k_time >= 1.0:
+        # Линейная интерполяция от target до 99%
+        eta_base = target_efficiency + (0.99 - target_efficiency) * (k_time - 1.0) / 0.5
+    elif k_time >= 0.7:
+        # Линейная интерполяция от 85% до target
+        eta_base = 0.85 + (target_efficiency - 0.85) * (k_time - 0.7) / 0.3
+    elif k_time >= 0.5:
+        # Линейная интерполяция от 70% до 85%
+        eta_base = 0.70 + 0.15 * (k_time - 0.5) / 0.2
+    else:
+        eta_base = 0.50 + 0.20 * k_time / 0.5
+
+    # Ограничение
+    eta_burnout = max(0.0, min(0.99, eta_base))
+
+    return eta_burnout, k_diameter, t_required_adjusted
 
 def calculate_required_burnout_time(
     moisture: float,
     flue_gas_temp: float,
+    burnout_speed_factor: float = 1.0,
 ) -> Tuple[float, float, float, float, float]:
     """
     Рассчитывает необходимое время выгорания по стадиям.
+    
+    Parameters
+    ----------
+    moisture : float
+        Влажность, доля (0-1).
+    flue_gas_temp : float
+        Температура в зоне горения, °C.
+    burnout_speed_factor : float
+        Коэффициент скорости выгорания.
+        1.0 — базовая скорость.
+        1.2 — выгорание в 1,2 раза быстрее.
+        >1.0 — быстрее, <1.0 — медленнее.
+    
+    Returns
+    -------
+    tuple
+        (t_drying, t_heating, t_combustion, t_burnout, t_required)
     """
     # Время сушки (зависит от влажности)
     t_drying = 5.0 + 20.0 * moisture
@@ -290,11 +339,11 @@ def calculate_required_burnout_time(
     # Время дожигания
     t_burnout = 5.0
 
-    # Итого
-    t_required = t_drying + t_heating + t_combustion + t_burnout
+    # Итого с учётом коэффициента скорости
+    t_required_raw = t_drying + t_heating + t_combustion + t_burnout
+    t_required = t_required_raw / burnout_speed_factor
 
     return t_drying, t_heating, t_combustion, t_burnout, t_required
-
 
 def calculate_adiabatic_temp(
     q_net_ar: float,
@@ -340,6 +389,40 @@ def calculate_adiabatic_temp(
     
     return t_combustion
 
+def calculate_fuel_heat(inp: "ThermalBalanceInput") -> float:
+    """
+    Рассчитывает тепловыделение от топлива с учётом базы теплоты сгорания.
+    """
+    if inp.q_basis == "as_received":
+        m = inp.fuel_feed
+    elif inp.q_basis == "dry":
+        m = inp.fuel_feed * (1.0 - inp.moisture)
+    elif inp.q_basis == "daf":
+        m_dry = inp.fuel_feed * (1.0 - inp.moisture)
+        m_ash = inp.fuel_feed * inp.ash_content
+        m = m_dry - m_ash
+    else:
+        m = inp.fuel_feed
+    
+    return (m * inp.q_net_ar) / 3600.0
+
+
+def evaluate_burnout_status(eta_burnout: float) -> Tuple[str, str]:
+    """
+    Оценивает статус полноты выгорания.
+    """
+    if eta_burnout >= 0.98:
+        return "excellent", "Отлично"
+    elif eta_burnout >= 0.95:
+        return "good", "Хорошо"
+    elif eta_burnout >= 0.90:
+        return "acceptable", "Удовлетворительно"
+    elif eta_burnout >= 0.80:
+        return "poor", "Плохо"
+    else:
+        return "unacceptable", "Недопустимо"
+
+
 def calculate_thermal_balance(inp: ThermalBalanceInput) -> ThermalBalanceResult:
     """
     Выполняет полный расчёт теплового баланса.
@@ -358,10 +441,11 @@ def calculate_thermal_balance(inp: ThermalBalanceInput) -> ThermalBalanceResult:
     # =========================================================
     # 2. ТЕПЛОТА СГОРАНИЯ
     # =========================================================
+    res.q_basis = inp.q_basis
     res.q_net_ar = max(0.0, inp.q_net_ar)
 
-    # Номинальное тепловыделение (если бы всё сгорело)
-    res.q_fuel_nominal = (inp.fuel_feed * res.q_net_ar) / 3600.0
+    # Номинальное тепловыделение (с учётом базы теплоты сгорания)
+    res.q_fuel_nominal = calculate_fuel_heat(inp)
     res.q_burner = inp.burner_power
     res.q_input_nominal = res.q_fuel_nominal + inp.burner_power
 
@@ -387,12 +471,16 @@ def calculate_thermal_balance(inp: ThermalBalanceInput) -> ThermalBalanceResult:
     # 4. НЕОБХОДИМОЕ ВРЕМЯ ВЫГОРАНИЯ
     # =========================================================
     t_drying, t_heating, t_combustion, t_burnout, t_required = \
-        calculate_required_burnout_time(inp.moisture, inp.flue_gas_temp)
+        calculate_required_burnout_time(
+            inp.moisture, 
+            inp.flue_gas_temp,
+            inp.burnout_speed_factor,
+        )
 
     # =========================================================
     # 5. ПОЛНОТА ВЫГОРАНИЯ
     # =========================================================
-    eta_burnout, k_diameter = calculate_burnout_efficiency(
+    eta_burnout, k_diameter, t_required_adjusted = calculate_burnout_efficiency(
         t_residence, t_required, inp.drum_diameter
     )
 
@@ -505,7 +593,7 @@ def calculate_thermal_balance(inp: ThermalBalanceInput) -> ThermalBalanceResult:
     burnout.t_heating = t_heating
     burnout.t_combustion = t_combustion
     burnout.t_burnout = t_burnout
-    burnout.t_required = t_required
+    burnout.t_required = t_required_adjusted  # Скорректированное время
 
     if t_required > 0:
         burnout.time_ratio = t_residence / t_required
@@ -516,6 +604,11 @@ def calculate_thermal_balance(inp: ThermalBalanceInput) -> ThermalBalanceResult:
     burnout.k_diameter = k_diameter
     burnout.burnout_efficiency = eta_burnout
 
+    # Оценка статуса полноты выгорания
+    status_code, status_ru = evaluate_burnout_status(eta_burnout)
+    burnout.burnout_status = status_code
+    burnout.burnout_status_ru = status_ru
+
     # Тепловая нагрузка (от фактического тепловыделения)
     if drum_volume > 0:
         burnout.heat_load = (res.q_fuel_actual * 1000.0) / drum_volume
@@ -523,7 +616,17 @@ def calculate_thermal_balance(inp: ThermalBalanceInput) -> ThermalBalanceResult:
         burnout.heat_load = 0.0
 
     burnout.heat_load_ok = burnout.heat_load <= inp.max_heat_load
-    burnout.overall_ok = burnout.fill_ratio_ok and burnout.time_ok and burnout.heat_load_ok
+    burnout.overall_ok = (
+        burnout.fill_ratio_ok and 
+        burnout.time_ok and 
+        burnout.heat_load_ok and
+        burnout.burnout_efficiency >= 0.90  # Минимально допустимая полнота
+    )
+
+    if t_required_adjusted > 0:
+        burnout.time_ratio = t_residence / t_required_adjusted
+    else:
+        burnout.time_ratio = 1.0
 
     res.burnout = burnout
 

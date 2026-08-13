@@ -148,7 +148,7 @@ def liquid_cooling_calculate(
     Q_kW: float,
     T_gas_in_C: float,
     T_gas_out_C: float,
-    T_liquid_in_C: float = 80.0,
+    T_liquid_in_C: float = 90.0,
     dT_liquid_K: float = 20.0,
     glycol_type: str = "propylene",
     concentration_pct: float = 30.0,
@@ -216,6 +216,12 @@ def liquid_cooling_calculate(
             f"LMTD dry cooler = {dc['LMTD']:.0f}K. "
             f"Рекомендуется увеличить температуру антифриза до 90-110°C "
             f"или уменьшить нагрев воздуха."
+        )
+
+    if dc["area_m2"] > 5000:
+        warnings.append(
+            f"Площадь dry cooler = {dc['area_m2']:.0f} м² — очень большая. "
+            f"Проверьте параметры: температуру антифриза и нагрев воздуха."
         )
 
     # Проверки
